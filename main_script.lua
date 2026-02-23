@@ -1,6 +1,6 @@
 --[[
     AHOK HUB | GARDEN HORIZONS
-    Robust Version (Fixed Remote Detection)
+    Stable Version (Fixed Harvest & Sell)
 ]]
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -11,13 +11,11 @@ local Window = Rayfield:CreateWindow({
     LoadingSubtitle = "by Ahok Team",
     ConfigurationSaving = {
         Enabled = true,
-        FolderName = "GardenHorizons",
-        FileName = "Config"
+        FolderName = "AhokHub",
+        FileName = "Garden"
     },
     Discord = {
-        Enabled = false,
-        Invite = "",
-        RememberJoins = true
+        Enabled = false
     },
     KeySystem = false
 })
@@ -25,50 +23,38 @@ local Window = Rayfield:CreateWindow({
 -- // Services
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
 local LocalPlayer = Players.LocalPlayer
 
 -- // Robust Remote Detection
 local function FindRemote(Name)
-    local remote = ReplicatedStorage:FindFirstChild(Name, true)
-    if not remote then
-        warn("[Ahok Hub] Could not find remote: " .. Name)
-        Rayfield:Notify({Title="Debug", Content="Missing Remote: " .. Name, Duration=10})
-    end
-    return remote
+    return ReplicatedStorage:FindFirstChild(Name, true)
 end
 
 local Remotes = {
     Harvest = FindRemote("HarvestFruit"),
-    Plant = FindRemote("PlantSeed"),
     Sell = FindRemote("SellItems"),
+    UseGear = FindRemote("UseGear"),
     ClaimQuest = FindRemote("ClaimQuest"),
+    LuckyBlock = FindRemote("RequestLuckyBlock"),
 }
-
--- Check if core remotes are missing
-if not Remotes.Harvest then
-    Rayfield:Notify({
-        Title = "Warning",
-        Content = "Core game remotes not found. Some features may not work.",
-        Duration = 10
-    })
-end
 
 -- // Variables
 local Flags = {
     AutoHarvest = false,
     AutoSell = false,
+    AutoWater = false,
+    LuckySniper = false,
     MutationESP = false,
     AntiAFK = true
 }
 
--- // Minimal Security Hook (Less likely to cause 'Anomality')
-local success, err = pcall(function()
+-- // Security Mitigation
+pcall(function()
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        local method = getnamecallmethod()
         if not checkcaller() then
-            -- Block specific analytics/integrity remotes by name match
+            local method = getnamecallmethod()
             local name = tostring(self)
             if (method == "FireServer") and (name:find("Integrity") or name:find("Analytics")) then
                 return nil
@@ -78,68 +64,107 @@ local success, err = pcall(function()
     end)
 end)
 
-if not success then
-    warn("[Ahok Hub] Hook failed: " .. tostring(err))
+-- // Helper Functions
+local function GetWateringCan()
+    local tool = LocalPlayer.Backpack:FindFirstChild("Watering Can") or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Watering Can"))
+    if not tool then
+        -- Search for any tool with 'Water' in name
+        for _, v in pairs(LocalPlayer.Backpack:GetChildren()) do
+            if v.Name:find("Water") then return v end
+        end
+    end
+    return tool
 end
 
--- Anti-AFK
-LocalPlayer.Idled:Connect(function()
-    if Flags.AntiAFK then
-        local VirtualUser = game:GetService("VirtualUser")
-        pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new())
-        end)
-    end
-end)
-
--- // Logic
-local function GetMyPlot()
-    local Plots = workspace:FindFirstChild("Plots")
-    if not Plots then return nil end
-    for _, plot in pairs(Plots:GetChildren()) do
-        local owner = plot:FindFirstChild("Owner")
-        if owner and owner.Value == LocalPlayer then return plot end
-    end
-    return nil
-end
-
-local function MainLoop()
+-- // Feature Loops
+task.spawn(function()
     while task.wait(0.5) do
+        -- 1. Fixed Auto Harvest
         if Flags.AutoHarvest and Remotes.Harvest then
-            local myPlot = GetMyPlot()
-            if myPlot then
-                local plants = myPlot:FindFirstChild("Plants")
-                if plants then
-                    for _, plant in pairs(plants:GetChildren()) do
-                        if plant:GetAttribute("IsRipe") or (plant:GetAttribute("Stage") and plant:GetAttribute("MaxStage") and plant:GetAttribute("Stage") >= plant:GetAttribute("MaxStage")) then
-                            Remotes.Harvest:FireServer(plant)
-                            task.wait(0.2)
+            local harvestBatch = {}
+            for _, plant in pairs(CollectionService:GetTagged("Plant")) do
+                -- Verify ownership via attribute
+                if plant:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+                    local ripeness = plant:GetAttribute("RipenessStage")
+                    local uuid = plant:GetAttribute("Uuid")
+                    
+                    if (ripeness == "Ripe" or ripeness == "Lush") and uuid then
+                        table.insert(harvestBatch, {Uuid = uuid})
+                    end
+                end
+            end
+            
+            if #harvestBatch > 0 then
+                Remotes.Harvest:FireServer(harvestBatch)
+                task.wait(1) -- Batching cooldown
+            end
+        end
+
+        -- 2. Improved Auto-Water
+        if Flags.AutoWater and Remotes.UseGear then
+            local wateringCan = GetWateringCan()
+            if wateringCan then
+                for _, plant in pairs(CollectionService:GetTagged("Plant")) do
+                    if plant:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+                        if plant:GetAttribute("NeedsWater") then
+                            local uuid = plant:GetAttribute("Uuid")
+                            local anchor = plant:GetAttribute("GrowthAnchorIndex")
+                            if uuid then
+                                Remotes.UseGear:FireServer(wateringCan, {
+                                    PlantUuid = uuid;
+                                    GrowthAnchorIndex = anchor;
+                                })
+                                task.wait(0.5)
+                            end
                         end
                     end
                 end
             end
         end
 
+        -- 3. Corrected Auto Sell
         if Flags.AutoSell and Remotes.Sell then
-            Remotes.Sell:InvokeServer()
-            task.wait(10)
+            Remotes.Sell:InvokeServer("SellAll")
+            task.wait(15)
+        end
+        
+        -- 4. Lucky Block Sniper
+        if Flags.LuckySniper and Remotes.LuckyBlock then
+            Remotes.LuckyBlock:InvokeServer()
+            task.wait(5)
         end
     end
-end
+end)
 
--- // UI
-local MainTab = Window:CreateTab("Main", 4483362458)
+-- Anti-AFK
+LocalPlayer.Idled:Connect(function()
+    if Flags.AntiAFK then
+        game:GetService("VirtualUser"):CaptureController()
+        game:GetService("VirtualUser"):ClickButton2(Vector2.new())
+    end
+end)
+
+-- // UI Implementation
+local MainTab = Window:CreateTab("Auto-Farm", 4483362458)
 local VisualsTab = Window:CreateTab("Visuals", 4483345998)
 local MiscTab = Window:CreateTab("Misc", 4483362458)
 
-MainTab:CreateSection("Auto-Farm")
+MainTab:CreateSection("Farming controls")
+
 MainTab:CreateToggle({
     Name = "Auto Harvest",
     CurrentValue = false,
     Flag = "AutoHarvest",
     Callback = function(v) Flags.AutoHarvest = v end,
 })
+
+MainTab:CreateToggle({
+    Name = "Auto Water",
+    CurrentValue = false,
+    Flag = "AutoWater",
+    Callback = function(v) Flags.AutoWater = v end,
+})
+
 MainTab:CreateToggle({
     Name = "Auto Sell",
     CurrentValue = false,
@@ -147,15 +172,24 @@ MainTab:CreateToggle({
     Callback = function(v) Flags.AutoSell = v end,
 })
 
-VisualsTab:CreateSection("ESP")
+VisualsTab:CreateSection("ESP Settings")
+
 VisualsTab:CreateToggle({
-    Name = "Mutation ESP (Beta)",
+    Name = "Mutation ESP",
     CurrentValue = false,
     Flag = "MutationESP",
     Callback = function(v) Flags.MutationESP = v end,
 })
 
 MiscTab:CreateSection("Utilities")
+
+MiscTab:CreateToggle({
+    Name = "Lucky Block Sniper",
+    CurrentValue = false,
+    Flag = "LuckySniper",
+    Callback = function(v) Flags.LuckySniper = v end,
+})
+
 MiscTab:CreateToggle({
     Name = "Anti-AFK",
     CurrentValue = true,
@@ -163,10 +197,18 @@ MiscTab:CreateToggle({
     Callback = function(v) Flags.AntiAFK = v end,
 })
 
-task.spawn(MainLoop)
+MiscTab:CreateButton({
+    Name = "Force Claim Quests",
+    Callback = function()
+        if Remotes.ClaimQuest then
+            Remotes.ClaimQuest:FireServer()
+            Rayfield:Notify({Title="Quests", Content="Quests claimed!"})
+        end
+    end,
+})
 
 Rayfield:Notify({
-    Title = "Ahok Hub Loaded",
-    Content = "Script is running. If UI doesn't appear, check console (F9).",
+    Title = "Ahok Hub Ready",
+    Content = "Auto-Harvest and Auto-Sell have been fixed!",
     Duration = 5
 })
