@@ -127,54 +127,58 @@ local function GetPlantName(plant)
 end
 
 -- // Feature Loops
--- Harvest Loop (Delta Pattern)
+-- Harvest Loop (Fixed: correct attribute names, skip IsHarvested, regrowable-safe)
 task.spawn(function()
     while task.wait() do
         local success, err = pcall(function()
             if Flags.AutoHarvest and Remotes.Harvest then
                 local harvestBatch = {}
                 
-                -- Helper to scan for fruits recursively
+                -- Scan object and descendants for harvestable fruits
                 local function ScanForHarvest(object)
+                    -- Skip already-harvested / bare regrowable stalks
+                    if object:GetAttribute("IsHarvested") then return end
+                    
                     local uuid = object:GetAttribute("Uuid")
                     local fullyGrown = object:GetAttribute("FullyGrown")
                     local ripeness = object:GetAttribute("RipenessStage")
                     
-                    if uuid and (fullyGrown or ripeness == "Ripe" or ripeness == "Lush") then
+                    if uuid and (fullyGrown == true or ripeness == "Ripe" or ripeness == "Lush") then
                         table.insert(harvestBatch, {Uuid = uuid})
                     end
                     
                     for _, child in pairs(object:GetChildren()) do
-                        if child:IsA("Model") or child:IsA("Part") then
-                            ScanForHarvest(child)
-                        end
+                        ScanForHarvest(child)
                     end
                 end
 
-                -- Scan tagged plants or entire Plots folder for reliability
-                local targets = CollectionService:GetTagged("Plant")
-                if #targets == 0 then
-                    local plots = workspace:FindFirstChild("Plots")
-                    if plots then
-                        for _, plot in pairs(plots:GetChildren()) do
-                            if plot:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
-                                targets = plot:GetChildren()
-                                break
+                -- Find player's plot (game uses "Owner" attribute, not "OwnerUserId")
+                local plots = workspace:FindFirstChild("Plots")
+                if plots then
+                    for _, plot in pairs(plots:GetChildren()) do
+                        if plot:GetAttribute("Owner") == LocalPlayer.UserId then
+                            -- Scan plants on my plot
+                            for _, plant in pairs(plot:GetDescendants()) do
+                                if plant:IsA("Model") and plant:GetAttribute("PlantType") then
+                                    local pName = GetPlantName(plant)
+                                    if Flags.SelectedHarvest[pName] then
+                                        ScanForHarvest(plant)
+                                    end
+                                end
                             end
+                            break
                         end
                     end
                 end
-
-                for _, plant in pairs(targets) do
-                    if plant:IsA("Model") and (plant:GetAttribute("OwnerUserId") == LocalPlayer.UserId or plant:IsDescendantOf(workspace:FindFirstChild("Plots"))) then
-                        local pName = GetPlantName(plant)
-                        local matchesFilter = false
-                        if Flags.SelectedHarvest[pName] then
-                            matchesFilter = true
-                        end
-                        
-                        if matchesFilter then
-                            ScanForHarvest(plant)
+                
+                -- Fallback: use CollectionService tagged plants
+                if #harvestBatch == 0 then
+                    for _, plant in pairs(CollectionService:GetTagged("Plant")) do
+                        if plant:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+                            local pName = GetPlantName(plant)
+                            if Flags.SelectedHarvest[pName] and not plant:GetAttribute("IsHarvested") then
+                                ScanForHarvest(plant)
+                            end
                         end
                     end
                 end
@@ -184,7 +188,7 @@ task.spawn(function()
                 end
             end
         end)
-        if not success then warn("Harvest Error: " .. err) end
+        if not success then warn("Harvest Error: " .. tostring(err)) end
         task.wait(Flags.HarvestInterval)
     end
 end)
@@ -228,29 +232,11 @@ task.spawn(function()
     
     while task.wait(1) do
         pcall(function()
-            -- Auto Sell (Selective supported via backpack check)
+            -- Auto Sell (Fixed: game uses SellAll remote - SellSingle doesn't exist)
             if Flags.AutoSell and Remotes.Sell and (os.time() - lastSell >= Flags.SellInterval) then
-                local anySold = false
-                for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
-                    local itemName = item.Name
-                    local isTarget = false
-                    for pType, enabled in pairs(Flags.SelectedSell) do
-                        if enabled and itemName:find(pType) then
-                            isTarget = true
-                            break
-                        end
-                    end
-                    
-                    if isTarget and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-                        LocalPlayer.Character.Humanoid:EquipTool(item)
-                        task.wait(0.2)
-                        Remotes.Sell:InvokeServer("SellSingle")
-                        anySold = true
-                    end
-                end
-                
-                -- Fallback to SellAll if everything is selected (optional optimization)
-                -- But SellSingle is safer for specific multi-selection
+                pcall(function()
+                    Remotes.Sell:InvokeServer("SellAll")
+                end)
                 lastSell = os.time()
             end
 
@@ -300,7 +286,7 @@ task.spawn(function()
     end
 end)
 
--- Auto Plant Loop (Robust Version)
+-- Auto Plant Loop (Fixed: Owner attr, PlantableArea is a Folder with Part children)
 task.spawn(function()
     while task.wait(1) do
         if Flags.AutoPlant and Remotes.Plant then
@@ -308,19 +294,31 @@ task.spawn(function()
                 local plots = workspace:FindFirstChild("Plots")
                 if not plots then return end
                 
+                -- FIXED: game uses "Owner" attribute for plots, not "OwnerUserId"
                 local myPlot = nil
                 for _, plot in pairs(plots:GetChildren()) do
-                    if plot:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+                    if plot:GetAttribute("Owner") == LocalPlayer.UserId then
                         myPlot = plot
                         break
                     end
                 end
                 
                 if myPlot then
+                    -- FIXED: PlantableArea is a Folder that contains BasePart children
                     local areas = {}
-                    for _, child in pairs(myPlot:GetChildren()) do
-                        if child.Name == "PlantableArea" and (child:IsA("Part") or child:IsA("MeshPart")) then
-                            table.insert(areas, child)
+                    local plantableFolder = myPlot:FindFirstChild("PlantableArea")
+                    if plantableFolder then
+                        for _, child in pairs(plantableFolder:GetChildren()) do
+                            if child:IsA("BasePart") then
+                                table.insert(areas, child)
+                            end
+                        end
+                    else
+                        -- Fallback: look for any BasePart inside the plot
+                        for _, child in pairs(myPlot:GetDescendants()) do
+                            if child:IsA("BasePart") and child.Name:lower():find("plant") then
+                                table.insert(areas, child)
+                            end
                         end
                     end
                     
@@ -331,22 +329,26 @@ task.spawn(function()
                                 local sz = area.Size
                                 local cf = area.CFrame
                                 
-                                -- Refined random position on top surface
+                                -- Random position on top surface of plantable part
                                 local rx = (math.random() - 0.5) * (sz.X * 0.8)
                                 local rz = (math.random() - 0.5) * (sz.Z * 0.8)
-                                local pos = (cf * CFrame.new(rx, (sz.Y/2) + 0.5, rz)).Position
+                                local pos = (cf * CFrame.new(rx, sz.Y / 2, rz)).Position
                                 
                                 local seedType = seed:gsub(" Seed", "")
                                 pcall(function()
                                     Remotes.Plant:InvokeServer(seedType, pos)
                                 end)
-                                task.wait(0.2)
+                                task.wait(0.3)
                             end
                         end
+                    else
+                        warn("AutoPlant: No PlantableArea parts found on plot!")
                     end
+                else
+                    warn("AutoPlant: Could not find your plot (Owner attribute check). Make sure you have a plot!")
                 end
             end)
-            if not success then warn("Plant Error: " .. err) end
+            if not success then warn("Plant Error: " .. tostring(err)) end
             task.wait(Flags.PlantInterval)
         end
     end
