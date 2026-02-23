@@ -64,7 +64,7 @@ local Flags = {
     InfiniteZoom = false,
     
     SelectedHarvest = {},
-    SelectedSell = "All",
+    SelectedSell = {},
     SelectedBuy = {},
     SelectedPlant = {},
     
@@ -80,10 +80,13 @@ local Flags = {
 local PlantTypesOnly = {"Carrot", "Corn", "Onion", "Strawberry", "Mushroom", "Beetroot", "Tomato", "Apple"}
 local AllSeeds = {"Carrot Seed", "Corn Seed", "Onion Seed", "Strawberry Seed", "Mushroom Seed", "Beetroot Seed", "Tomato Seed", "Apple Seed"}
 local AllGear = {"Watering Can", "Basic Sprinkler", "Harvest Bell", "Turbo Sprinkler", "Favorite Tool"}
+local PlantTypesWithAll = {"All", "Carrot", "Corn", "Onion", "Strawberry", "Mushroom", "Beetroot", "Tomato", "Apple"}
 
 -- Initialize filters
 for _, p in pairs(PlantTypesOnly) do Flags.SelectedHarvest[p] = true end
+for _, p in pairs(PlantTypesOnly) do Flags.SelectedSell[p] = true end
 for _, s in pairs(AllSeeds) do Flags.SelectedBuy[s] = false end
+for _, g in pairs(AllGear) do Flags.SelectedBuy[g] = false end
 for _, s in pairs(AllSeeds) do Flags.SelectedPlant[s] = false end
 local ShopOptions = {}
 for _, v in ipairs(AllSeeds) do table.insert(ShopOptions, v) end
@@ -117,7 +120,7 @@ end
 
 local function GetPlantName(plant)
     local name = plant.Name
-    for _, pType in pairs(PlantTypes) do
+    for _, pType in pairs(PlantTypesOnly) do
         if name:find(pType) then return pType end
     end
     return name
@@ -227,28 +230,38 @@ task.spawn(function()
         pcall(function()
             -- Auto Sell (Selective supported via backpack check)
             if Flags.AutoSell and Remotes.Sell and (os.time() - lastSell >= Flags.SellInterval) then
-                if Flags.SelectedSell == "All" then
-                    Remotes.Sell:InvokeServer("SellAll")
-                else
-                    -- For selective sell, we must equip the item first for "SellSingle" logic
-                    for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
-                        if item.Name:find(Flags.SelectedSell) and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-                            LocalPlayer.Character.Humanoid:EquipTool(item)
-                            task.wait(0.2)
-                            Remotes.Sell:InvokeServer("SellSingle")
+                local anySold = false
+                for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
+                    local itemName = item.Name
+                    local isTarget = false
+                    for pType, enabled in pairs(Flags.SelectedSell) do
+                        if enabled and itemName:find(pType) then
+                            isTarget = true
+                            break
                         end
                     end
+                    
+                    if isTarget and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+                        LocalPlayer.Character.Humanoid:EquipTool(item)
+                        task.wait(0.2)
+                        Remotes.Sell:InvokeServer("SellSingle")
+                        anySold = true
+                    end
                 end
+                
+                -- Fallback to SellAll if everything is selected (optional optimization)
+                -- But SellSingle is safer for specific multi-selection
                 lastSell = os.time()
             end
 
-            -- Auto Buy (Standard Items - Supports Multiple)
+            -- Auto Buy (Standard Items - Supports Multiple Seeds & Gear)
             if Flags.AutoBuy and Remotes.Shop then
-                for seed, enabled in pairs(Flags.SelectedBuy) do
+                for item, enabled in pairs(Flags.SelectedBuy) do
                     if enabled then
                         pcall(function()
-                            local cleanName = seed:gsub(" Seed", "")
-                            Remotes.Shop:InvokeServer("SeedShop", cleanName)
+                            local shopType = table.find(AllGear, item) and "GearShop" or "SeedShop"
+                            local cleanName = item:gsub(" Seed", "")
+                            Remotes.Shop:InvokeServer(shopType, cleanName)
                         end)
                         task.wait(0.5)
                     end
@@ -424,7 +437,14 @@ MainTab:CreateToggle({
             Flags.AutoSpin = true
             Flags.AutoClaim = true
             Flags.AntiAFK = true
-            Rayfield:Notify({Title = "Master AFK", Content = "All farming features enabled!", Duration = 3})
+            
+            -- Enable all filters for maximum AFK
+            for p, _ in pairs(Flags.SelectedHarvest) do Flags.SelectedHarvest[p] = true end
+            for p, _ in pairs(Flags.SelectedSell) do Flags.SelectedSell[p] = true end
+            for s, _ in pairs(Flags.SelectedBuy) do Flags.SelectedBuy[s] = true end
+            for s, _ in pairs(Flags.SelectedPlant) do Flags.SelectedPlant[s] = true end
+            
+            Rayfield:Notify({Title = "Master AFK", Content = "All features and filters enabled for 24/7 AFK!", Duration = 5})
         end
     end,
 })
@@ -468,12 +488,14 @@ MainTab:CreateToggle({
     Flag = "AutoSell",
     Callback = function(v) Flags.AutoSell = v end,
 })
-MainTab:CreateDropdown({
-    Name = "Sell Filter",
-    Options = PlantTypes,
-    CurrentOption = "All",
-    Callback = function(v) Flags.SelectedSell = v[1] end,
-})
+MainTab:CreateSection("Sell Filters (Multiple)")
+for _, p in pairs(PlantTypesOnly) do
+    MainTab:CreateToggle({
+        Name = "Sell " .. p,
+        CurrentValue = Flags.SelectedSell[p],
+        Callback = function(v) Flags.SelectedSell[p] = v end,
+    })
+end
 MainTab:CreateSlider({
     Name = "Sell Delay (seconds)",
     Range = {5, 60},
@@ -493,6 +515,13 @@ for _, s in pairs(AllSeeds) do
         Name = "Buy " .. s,
         CurrentValue = Flags.SelectedBuy[s],
         Callback = function(v) Flags.SelectedBuy[s] = v end,
+    })
+end
+for _, g in pairs(AllGear) do
+    MainTab:CreateToggle({
+        Name = "Buy " .. g,
+        CurrentValue = Flags.SelectedBuy[g],
+        Callback = function(v) Flags.SelectedBuy[g] = v end,
     })
 end
 
