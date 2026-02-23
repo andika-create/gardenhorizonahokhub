@@ -63,22 +63,28 @@ local Flags = {
     AutoClaim = false,
     InfiniteZoom = false,
     
-    SelectedHarvest = "All",
+    SelectedHarvest = {},
     SelectedSell = "All",
-    SelectedBuy = "Carrot Seed",
-    SelectedPlant = "Carrot Seed",
+    SelectedBuy = {},
+    SelectedPlant = {},
     
     HarvestInterval = 1,
     SellInterval = 15,
     WaterInterval = 0.5,
     PlantInterval = 1,
     ZoomDistance = 128,
-    MasterAFK = false
+    MasterAFK = false,
+    UI_Ready = false
 }
 
-local PlantTypes = {"All", "Carrot", "Corn", "Onion", "Strawberry", "Mushroom", "Beetroot", "Tomato", "Apple"}
+local PlantTypesOnly = {"Carrot", "Corn", "Onion", "Strawberry", "Mushroom", "Beetroot", "Tomato", "Apple"}
 local AllSeeds = {"Carrot Seed", "Corn Seed", "Onion Seed", "Strawberry Seed", "Mushroom Seed", "Beetroot Seed", "Tomato Seed", "Apple Seed"}
 local AllGear = {"Watering Can", "Basic Sprinkler", "Harvest Bell", "Turbo Sprinkler", "Favorite Tool"}
+
+-- Initialize filters
+for _, p in pairs(PlantTypesOnly) do Flags.SelectedHarvest[p] = true end
+for _, s in pairs(AllSeeds) do Flags.SelectedBuy[s] = false end
+for _, s in pairs(AllSeeds) do Flags.SelectedPlant[s] = false end
 local ShopOptions = {}
 for _, v in ipairs(AllSeeds) do table.insert(ShopOptions, v) end
 for _, v in ipairs(AllGear) do table.insert(ShopOptions, v) end
@@ -159,7 +165,10 @@ task.spawn(function()
                 for _, plant in pairs(targets) do
                     if plant:IsA("Model") and (plant:GetAttribute("OwnerUserId") == LocalPlayer.UserId or plant:IsDescendantOf(workspace:FindFirstChild("Plots"))) then
                         local pName = GetPlantName(plant)
-                        local matchesFilter = (Flags.SelectedHarvest == "All" or Flags.SelectedHarvest == pName)
+                        local matchesFilter = false
+                        if Flags.SelectedHarvest[pName] then
+                            matchesFilter = true
+                        end
                         
                         if matchesFilter then
                             ScanForHarvest(plant)
@@ -233,13 +242,17 @@ task.spawn(function()
                 lastSell = os.time()
             end
 
-            -- Auto Buy (Standard Items)
-            if Flags.AutoBuy and Remotes.Shop and Flags.SelectedBuy ~= "None" then
-                pcall(function()
-                    local shopType = table.find(AllGear, Flags.SelectedBuy) and "GearShop" or "SeedShop"
-                    -- Correct behavior: Send the name exactly as it appears in the shop data
-                    Remotes.Shop:InvokeServer(shopType, Flags.SelectedBuy)
-                end)
+            -- Auto Buy (Standard Items - Supports Multiple)
+            if Flags.AutoBuy and Remotes.Shop then
+                for seed, enabled in pairs(Flags.SelectedBuy) do
+                    if enabled then
+                        pcall(function()
+                            local cleanName = seed:gsub(" Seed", "")
+                            Remotes.Shop:InvokeServer("SeedShop", cleanName)
+                        end)
+                        task.wait(0.5)
+                    end
+                end
                 task.wait(1)
             end
 
@@ -277,7 +290,7 @@ end)
 -- Auto Plant Loop (Robust Version)
 task.spawn(function()
     while task.wait(1) do
-        if Flags.AutoPlant and Remotes.Plant and Flags.SelectedPlant ~= "None" then
+        if Flags.AutoPlant and Remotes.Plant then
             local success, err = pcall(function()
                 local plots = workspace:FindFirstChild("Plots")
                 if not plots then return end
@@ -291,18 +304,28 @@ task.spawn(function()
                 end
                 
                 if myPlot then
-                    local area = myPlot:FindFirstChild("PlantableArea")
-                    if area and (area:IsA("Part") or area:IsA("MeshPart")) then
-                        -- Calculate valid surface point
-                        local sz = area.Size
-                        local cf = area.CFrame
-                        local rx = (math.random() - 0.5) * (sz.X - 2) -- Inset slightly
-                        local rz = (math.random() - 0.5) * (sz.Z - 2)
-                        local pos = (cf * CFrame.new(rx, sz.Y/2, rz)).Position
-                        
-                        -- Seed type mapping: internal remote expects base name
-                        local seedType = Flags.SelectedPlant:gsub(" Seed", "")
-                        Remotes.Plant:InvokeServer(seedType, pos)
+                    local areas = {}
+                    for _, child in pairs(myPlot:GetChildren()) do
+                        if child.Name == "PlantableArea" and (child:IsA("Part") or child:IsA("MeshPart")) then
+                            table.insert(areas, child)
+                        end
+                    end
+                    
+                    if #areas > 0 then
+                        for seed, enabled in pairs(Flags.SelectedPlant) do
+                            if enabled then
+                                local area = areas[math.random(1, #areas)]
+                                local sz = area.Size
+                                local cf = area.CFrame
+                                local rx = (math.random() - 0.5) * (sz.X - 2)
+                                local rz = (math.random() - 0.5) * (sz.Z - 2)
+                                local pos = (cf * CFrame.new(rx, sz.Y/2, rz)).Position
+                                
+                                local seedType = seed:gsub(" Seed", "")
+                                Remotes.Plant:InvokeServer(seedType, pos)
+                                task.wait(0.1)
+                            end
+                        end
                     end
                 end
             end)
@@ -414,12 +437,15 @@ MainTab:CreateToggle({
     Flag = "AutoHarvest",
     Callback = function(v) Flags.AutoHarvest = v end,
 })
-MainTab:CreateDropdown({
-    Name = "Crop Filter",
-    Options = PlantTypes,
-    CurrentOption = "All",
-    Callback = function(v) Flags.SelectedHarvest = v[1] end,
-})
+MainTab:CreateSection("Harvest Filters (Multiple)")
+for _, p in pairs(PlantTypesOnly) do
+    MainTab:CreateToggle({
+        Name = "Harvest " .. p,
+        CurrentValue = Flags.SelectedHarvest[p],
+        Callback = function(v) Flags.SelectedHarvest[p] = v end,
+    })
+end
+
 MainTab:CreateSlider({
     Name = "Harvest Delay (seconds)",
     Range = {0.1, 10},
@@ -457,31 +483,34 @@ MainTab:CreateSlider({
 
 MainTab:CreateSection("Auto Buy Settings")
 MainTab:CreateToggle({
-    Name = "Auto Buy Items",
-    CurrentValue = false,
-    Flag = "AutoBuy",
+    Name = "Auto Buy Enabled",
+    CurrentValue = Flags.AutoBuy,
     Callback = function(v) Flags.AutoBuy = v end,
 })
-MainTab:CreateDropdown({
-    Name = "Select Item to Buy",
-    Options = ShopOptions,
-    CurrentOption = "Carrot Seed",
-    Callback = function(v) Flags.SelectedBuy = v[1] end,
-})
+MainTab:CreateSection("Buy Filters (Multiple)")
+for _, s in pairs(AllSeeds) do
+    MainTab:CreateToggle({
+        Name = "Buy " .. s,
+        CurrentValue = Flags.SelectedBuy[s],
+        Callback = function(v) Flags.SelectedBuy[s] = v end,
+    })
+end
 
 MainTab:CreateSection("Auto Plant Settings")
 MainTab:CreateToggle({
     Name = "Auto Plant Enabled",
-    CurrentValue = false,
-    Flag = "AutoPlant",
+    CurrentValue = Flags.AutoPlant,
     Callback = function(v) Flags.AutoPlant = v end,
 })
-MainTab:CreateDropdown({
-    Name = "Select Seed to Plant",
-    Options = AllSeeds,
-    CurrentOption = "Carrot Seed",
-    Callback = function(v) Flags.SelectedPlant = v[1] end,
-})
+MainTab:CreateSection("Plant Filters (Multiple)")
+for _, s in pairs(AllSeeds) do
+    MainTab:CreateToggle({
+        Name = "Plant " .. s,
+        CurrentValue = Flags.SelectedPlant[s],
+        Callback = function(v) Flags.SelectedPlant[s] = v end,
+    })
+end
+
 MainTab:CreateSlider({
     Name = "Plant Delay (seconds)",
     Range = {0.1, 5},
