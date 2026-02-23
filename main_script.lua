@@ -260,8 +260,8 @@ task.spawn(function()
                     if enabled then
                         pcall(function()
                             local shopType = table.find(AllGear, item) and "GearShop" or "SeedShop"
-                            local cleanName = item:gsub(" Seed", "")
-                            Remotes.Shop:InvokeServer(shopType, cleanName)
+                            -- Fix: Send full name (e.g. "Carrot Seed") as required by PurchaseShopItem
+                            Remotes.Shop:InvokeServer(shopType, item)
                         end)
                         task.wait(0.5)
                     end
@@ -330,13 +330,17 @@ task.spawn(function()
                                 local area = areas[math.random(1, #areas)]
                                 local sz = area.Size
                                 local cf = area.CFrame
-                                local rx = (math.random() - 0.5) * (sz.X - 2)
-                                local rz = (math.random() - 0.5) * (sz.Z - 2)
-                                local pos = (cf * CFrame.new(rx, sz.Y/2, rz)).Position
+                                
+                                -- Refined random position on top surface
+                                local rx = (math.random() - 0.5) * (sz.X * 0.8)
+                                local rz = (math.random() - 0.5) * (sz.Z * 0.8)
+                                local pos = (cf * CFrame.new(rx, (sz.Y/2) + 0.5, rz)).Position
                                 
                                 local seedType = seed:gsub(" Seed", "")
-                                Remotes.Plant:InvokeServer(seedType, pos)
-                                task.wait(0.1)
+                                pcall(function()
+                                    Remotes.Plant:InvokeServer(seedType, pos)
+                                end)
+                                task.wait(0.2)
                             end
                         end
                     end
