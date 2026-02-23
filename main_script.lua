@@ -233,13 +233,12 @@ task.spawn(function()
                 lastSell = os.time()
             end
 
-            -- Auto Buy
+            -- Auto Buy (Standard Items)
             if Flags.AutoBuy and Remotes.Shop and Flags.SelectedBuy ~= "None" then
                 pcall(function()
                     local shopType = table.find(AllGear, Flags.SelectedBuy) and "GearShop" or "SeedShop"
-                    -- Correct key removal of " Seed" for remote if needed, but game data shows keys are "Carrot", "Corn"
-                    local cleanName = Flags.SelectedBuy:gsub(" Seed", "")
-                    Remotes.Shop:InvokeServer(shopType, cleanName)
+                    -- Correct behavior: Send the name exactly as it appears in the shop data
+                    Remotes.Shop:InvokeServer(shopType, Flags.SelectedBuy)
                 end)
                 task.wait(1)
             end
@@ -275,11 +274,11 @@ task.spawn(function()
     end
 end)
 
--- Auto Plant Loop
+-- Auto Plant Loop (Robust Version)
 task.spawn(function()
     while task.wait(1) do
-        if Flags.AutoPlant and Remotes.Plant then
-            pcall(function()
+        if Flags.AutoPlant and Remotes.Plant and Flags.SelectedPlant ~= "None" then
+            local success, err = pcall(function()
                 local plots = workspace:FindFirstChild("Plots")
                 if not plots then return end
                 
@@ -292,21 +291,22 @@ task.spawn(function()
                 end
                 
                 if myPlot then
-                    local plantableAreas = {}
-                    for _, child in pairs(myPlot:GetChildren()) do
-                        if child.Name == "PlantableArea" then
-                            table.insert(plantableAreas, child)
-                        end
-                    end
-                    
-                    if #plantableAreas > 0 then
-                        local selectedArea = plantableAreas[math.random(1, #plantableAreas)]
-                        local cleanName = Flags.SelectedPlant:gsub(" Seed", "")
-                        -- Planting at the area position
-                        Remotes.Plant:InvokeServer(cleanName, selectedArea.Position)
+                    local area = myPlot:FindFirstChild("PlantableArea")
+                    if area and (area:IsA("Part") or area:IsA("MeshPart")) then
+                        -- Calculate valid surface point
+                        local sz = area.Size
+                        local cf = area.CFrame
+                        local rx = (math.random() - 0.5) * (sz.X - 2) -- Inset slightly
+                        local rz = (math.random() - 0.5) * (sz.Z - 2)
+                        local pos = (cf * CFrame.new(rx, sz.Y/2, rz)).Position
+                        
+                        -- Seed type mapping: internal remote expects base name
+                        local seedType = Flags.SelectedPlant:gsub(" Seed", "")
+                        Remotes.Plant:InvokeServer(seedType, pos)
                     end
                 end
             end)
+            if not success then warn("Plant Error: " .. err) end
             task.wait(Flags.PlantInterval)
         end
     end
