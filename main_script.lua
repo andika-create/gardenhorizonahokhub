@@ -18,34 +18,34 @@ local Window = Rayfield:CreateWindow({
     KeySystem = false
 })
 
--- // Services
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
-local CollectionService = game:GetService("CollectionService")
-local LocalPlayer = Players.LocalPlayer
-
 -- // Security & Helpers
 local function cref(s)
     return (cloneref or function(v) return v end)(s)
 end
 
+local ReplicatedStorage = cref(game:GetService("ReplicatedStorage"))
+local Players = cref(game:GetService("Players"))
+local CollectionService = cref(game:GetService("CollectionService"))
+local RunService = cref(game:GetService("RunService"))
+local LocalPlayer = Players.LocalPlayer
+
 -- // Robust Remote Detection
 local function FindRemote(Name)
     local r = ReplicatedStorage:FindFirstChild(Name, true)
     if not r then warn("Remote not found: " .. Name) end
-    return r
+    return cref(r)
 end
 
 local Remotes = {
-    Harvest = cref(FindRemote("HarvestFruit")),
-    Sell = cref(FindRemote("SellItems")),
-    UseGear = cref(FindRemote("UseGear")),
-    ClaimQuest = cref(FindRemote("ClaimQuest")),
-    LuckyBlock = cref(FindRemote("RequestLuckyBlock")),
-    Shop = cref(FindRemote("PurchaseShopItem")),
-    Spin = cref(FindRemote("RequestSpin")),
-    Plant = cref(FindRemote("PlantSeed")),
-    Reward = cref(FindRemote("ClaimReward")),
+    Harvest = FindRemote("HarvestFruit"),
+    Sell = FindRemote("SellItems"),
+    UseGear = FindRemote("UseGear"),
+    ClaimQuest = FindRemote("ClaimQuest"),
+    LuckyBlock = FindRemote("RequestLuckyBlock"),
+    Shop = FindRemote("PurchaseShopItem"),
+    Spin = FindRemote("RequestSpin"),
+    Plant = FindRemote("PlantSeed"),
+    Reward = FindRemote("ClaimReward"),
 }
 
 -- // Variables & Flags
@@ -72,7 +72,8 @@ local Flags = {
     SellInterval = 15,
     WaterInterval = 0.5,
     PlantInterval = 1,
-    ZoomDistance = 128
+    ZoomDistance = 128,
+    MasterAFK = false
 }
 
 local PlantTypes = {"All", "Carrot", "Corn", "Onion", "Strawberry", "Mushroom", "Beetroot", "Tomato", "Apple"}
@@ -117,36 +118,51 @@ local function GetPlantName(plant)
 end
 
 -- // Feature Loops
--- Harvest Loop
+-- Harvest Loop (Delta Pattern)
 task.spawn(function()
     while task.wait() do
         local success, err = pcall(function()
             if Flags.AutoHarvest and Remotes.Harvest then
                 local harvestBatch = {}
-                for _, plant in pairs(CollectionService:GetTagged("Plant")) do
-                    if plant:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+                
+                -- Helper to scan for fruits recursively
+                local function ScanForHarvest(object)
+                    local uuid = object:GetAttribute("Uuid")
+                    local fullyGrown = object:GetAttribute("FullyGrown")
+                    local ripeness = object:GetAttribute("RipenessStage")
+                    
+                    if uuid and (fullyGrown or ripeness == "Ripe" or ripeness == "Lush") then
+                        table.insert(harvestBatch, {Uuid = uuid})
+                    end
+                    
+                    for _, child in pairs(object:GetChildren()) do
+                        if child:IsA("Model") or child:IsA("Part") then
+                            ScanForHarvest(child)
+                        end
+                    end
+                end
+
+                -- Scan tagged plants or entire Plots folder for reliability
+                local targets = CollectionService:GetTagged("Plant")
+                if #targets == 0 then
+                    local plots = workspace:FindFirstChild("Plots")
+                    if plots then
+                        for _, plot in pairs(plots:GetChildren()) do
+                            if plot:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+                                targets = plot:GetChildren()
+                                break
+                            end
+                        end
+                    end
+                end
+
+                for _, plant in pairs(targets) do
+                    if plant:IsA("Model") and (plant:GetAttribute("OwnerUserId") == LocalPlayer.UserId or plant:IsDescendantOf(workspace:FindFirstChild("Plots"))) then
                         local pName = GetPlantName(plant)
                         local matchesFilter = (Flags.SelectedHarvest == "All" or Flags.SelectedHarvest == pName)
                         
                         if matchesFilter then
-                            -- Check if the main plant is harvestable (e.g. Carrot, Onion)
-                            local uuid = plant:GetAttribute("Uuid")
-                            local ripeness = plant:GetAttribute("RipenessStage")
-                            local fullyGrown = plant:GetAttribute("FullyGrown")
-                            
-                            if uuid and (ripeness == "Ripe" or ripeness == "Lush" or fullyGrown) then
-                                table.insert(harvestBatch, {Uuid = uuid})
-                            end
-                            
-                            -- Check for regrowable fruits (e.g. Corn, Strawberry) which are children models
-                            for _, child in pairs(plant:GetChildren()) do
-                                if child:IsA("Model") and child:GetAttribute("FullyGrown") then
-                                    local fruitUuid = child:GetAttribute("Uuid")
-                                    if fruitUuid then
-                                        table.insert(harvestBatch, {Uuid = fruitUuid})
-                                    end
-                                end
-                            end
+                            ScanForHarvest(plant)
                         end
                     end
                 end
@@ -349,11 +365,17 @@ task.spawn(function()
     end
 end)
 
--- Anti-AFK Logic
-LocalPlayer.Idled:Connect(function()
-    if Flags.AntiAFK then
-        game:GetService("VirtualUser"):CaptureController()
-        game:GetService("VirtualUser"):ClickButton2(Vector2.new())
+-- Anti-AFK Logic (Pro Version)
+task.spawn(function()
+    while task.wait(30) do
+        if Flags.AntiAFK then
+            pcall(function()
+                local vu = cref(game:GetService("VirtualUser"))
+                vu:CaptureController()
+                vu:ClickButton2(Vector2.new())
+                LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            end)
+        end
     end
 end)
 
@@ -361,6 +383,28 @@ end)
 local MainTab = Window:CreateTab("Auto-Farm", 4483362458)
 local VisualsTab = Window:CreateTab("Visuals", 4483345998)
 local MiscTab = Window:CreateTab("Misc", 4483362458)
+
+MainTab:CreateSection("Master Controls")
+MainTab:CreateToggle({
+    Name = "MASTER AFK (Enable All)",
+    CurrentValue = false,
+    Flag = "MasterAFK",
+    Callback = function(v) 
+        Flags.MasterAFK = v
+        if v then
+            Flags.AutoHarvest = true
+            Flags.AutoWater = true
+            Flags.AutoSell = true
+            Flags.AutoBuy = true
+            Flags.AutoPlant = true
+            Flags.AutoQuest = true
+            Flags.AutoSpin = true
+            Flags.AutoClaim = true
+            Flags.AntiAFK = true
+            Rayfield:Notify({Title = "Master AFK", Content = "All farming features enabled!", Duration = 3})
+        end
+    end,
+})
 
 -- Auto-Farm Tab Sections
 MainTab:CreateSection("Harvesting Settings")
