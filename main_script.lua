@@ -24,6 +24,11 @@ local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
 local LocalPlayer = Players.LocalPlayer
 
+-- // Security & Helpers
+local function cref(s)
+    return (cloneref or function(v) return v end)(s)
+end
+
 -- // Robust Remote Detection
 local function FindRemote(Name)
     local r = ReplicatedStorage:FindFirstChild(Name, true)
@@ -32,12 +37,15 @@ local function FindRemote(Name)
 end
 
 local Remotes = {
-    Harvest = FindRemote("HarvestFruit"),
-    Sell = FindRemote("SellItems"),
-    UseGear = FindRemote("UseGear"),
-    ClaimQuest = FindRemote("ClaimQuest"),
-    LuckyBlock = FindRemote("RequestLuckyBlock"),
-    Shop = FindRemote("PurchaseShopItem"),
+    Harvest = cref(FindRemote("HarvestFruit")),
+    Sell = cref(FindRemote("SellItems")),
+    UseGear = cref(FindRemote("UseGear")),
+    ClaimQuest = cref(FindRemote("ClaimQuest")),
+    LuckyBlock = cref(FindRemote("RequestLuckyBlock")),
+    Shop = cref(FindRemote("PurchaseShopItem")),
+    Spin = cref(FindRemote("RequestSpin")),
+    Plant = cref(FindRemote("PlantSeed")),
+    Reward = cref(FindRemote("ClaimReward")),
 }
 
 -- // Variables & Flags
@@ -50,17 +58,29 @@ local Flags = {
     AntiAFK = true,
     AutoBuy = false,
     AutoQuest = false,
+    AutoSpin = false,
+    AutoPlant = false,
+    AutoClaim = false,
+    InfiniteZoom = false,
     
     SelectedHarvest = "All",
     SelectedSell = "All",
-    SelectedBuy = "Carrot",
+    SelectedBuy = "Carrot Seed",
+    SelectedPlant = "Carrot Seed",
     
     HarvestInterval = 1,
     SellInterval = 15,
-    WaterInterval = 0.5
+    WaterInterval = 0.5,
+    PlantInterval = 1,
+    ZoomDistance = 128
 }
 
 local PlantTypes = {"All", "Carrot", "Corn", "Onion", "Strawberry", "Mushroom", "Beetroot", "Tomato", "Apple"}
+local AllSeeds = {"Carrot Seed", "Corn Seed", "Onion Seed", "Strawberry Seed", "Mushroom Seed", "Beetroot Seed", "Tomato Seed", "Apple Seed"}
+local AllGear = {"Watering Can", "Basic Sprinkler", "Harvest Bell", "Turbo Sprinkler", "Favorite Tool"}
+local ShopOptions = {}
+for _, v in ipairs(AllSeeds) do table.insert(ShopOptions, v) end
+for _, v in ipairs(AllGear) do table.insert(ShopOptions, v) end
 
 -- // Security Mitigation
 pcall(function()
@@ -170,11 +190,13 @@ task.spawn(function()
     end
 end)
 
--- Sell/Quest/Lucky Loop
+-- Sell/Quest/Lucky/Spin Loop
 task.spawn(function()
     local lastSell = 0
     local lastQuest = 0
     local lastLucky = 0
+    local lastSpin = 0
+    local lastClaim = 0
     
     while task.wait(1) do
         pcall(function()
@@ -197,9 +219,11 @@ task.spawn(function()
 
             -- Auto Buy
             if Flags.AutoBuy and Remotes.Shop and Flags.SelectedBuy ~= "None" then
-                -- RemoteFunction:InvokeServer("SeedShop", seedKey)
                 pcall(function()
-                    Remotes.Shop:InvokeServer("SeedShop", Flags.SelectedBuy)
+                    local shopType = table.find(AllGear, Flags.SelectedBuy) and "GearShop" or "SeedShop"
+                    -- Correct key removal of " Seed" for remote if needed, but game data shows keys are "Carrot", "Corn"
+                    local cleanName = Flags.SelectedBuy:gsub(" Seed", "")
+                    Remotes.Shop:InvokeServer(shopType, cleanName)
                 end)
                 task.wait(1)
             end
@@ -219,7 +243,109 @@ task.spawn(function()
                 Remotes.LuckyBlock:InvokeServer()
                 lastLucky = os.time()
             end
+
+            -- Auto Spin
+            if Flags.AutoSpin and Remotes.Spin and (os.time() - lastSpin >= 10) then
+                Remotes.Spin:InvokeServer()
+                lastSpin = os.time()
+            end
+
+            -- Auto Claim Rewards
+            if Flags.AutoClaim and Remotes.Reward and (os.time() - lastClaim >= 300) then
+                Remotes.Reward:FireServer()
+                lastClaim = os.time()
+            end
         end)
+    end
+end)
+
+-- Auto Plant Loop
+task.spawn(function()
+    while task.wait(1) do
+        if Flags.AutoPlant and Remotes.Plant then
+            pcall(function()
+                local plots = workspace:FindFirstChild("Plots")
+                if not plots then return end
+                
+                local myPlot = nil
+                for _, plot in pairs(plots:GetChildren()) do
+                    if plot:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+                        myPlot = plot
+                        break
+                    end
+                end
+                
+                if myPlot then
+                    local plantableAreas = {}
+                    for _, child in pairs(myPlot:GetChildren()) do
+                        if child.Name == "PlantableArea" then
+                            table.insert(plantableAreas, child)
+                        end
+                    end
+                    
+                    if #plantableAreas > 0 then
+                        local selectedArea = plantableAreas[math.random(1, #plantableAreas)]
+                        local cleanName = Flags.SelectedPlant:gsub(" Seed", "")
+                        -- Planting at the area position
+                        Remotes.Plant:InvokeServer(cleanName, selectedArea.Position)
+                    end
+                end
+            end)
+            task.wait(Flags.PlantInterval)
+        end
+    end
+end)
+
+-- Visual Zoom Loop
+task.spawn(function()
+    while task.wait(1) do
+        if Flags.InfiniteZoom then
+            LocalPlayer.CameraMaxZoomDistance = Flags.ZoomDistance
+        end
+    end
+end)
+
+-- Visual ESP Loop
+local ESPObjects = {}
+local function CreateESP(part, name)
+    local bbg = Instance.new("BillboardGui")
+    bbg.Size = UDim2.new(0, 100, 0, 50)
+    bbg.Adornee = part
+    bbg.AlwaysOnTop = true
+    
+    local label = Instance.new("TextLabel", bbg)
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.fromRGB(255, 0, 255) -- Purple for mutations
+    label.TextStrokeTransparency = 0
+    label.Text = "[MUTATION: " .. name .. "]"
+    label.Font = Enum.Font.SourceSansBold
+    label.TextSize = 14
+    
+    bbg.Parent = part
+    table.insert(ESPObjects, bbg)
+end
+
+task.spawn(function()
+    while task.wait(1) do
+        if Flags.MutationESP then
+            for _, obj in pairs(ESPObjects) do if obj then obj:Destroy() end end
+            ESPObjects = {}
+            for _, plant in pairs(CollectionService:GetTagged("Plant")) do
+                if plant:GetAttribute("Mutation") then
+                    local pName = GetPlantName(plant)
+                    local root = plant:FindFirstChild("PrimaryPart") or plant:FindFirstChildWhichIsA("BasePart")
+                    if root then
+                        CreateESP(root, pName)
+                    end
+                end
+            end
+        else
+            if #ESPObjects > 0 then
+                for _, obj in pairs(ESPObjects) do if obj then obj:Destroy() end end
+                ESPObjects = {}
+            end
+        end
     end
 end)
 
@@ -287,16 +413,38 @@ MainTab:CreateSlider({
 
 MainTab:CreateSection("Auto Buy Settings")
 MainTab:CreateToggle({
-    Name = "Auto Buy Seeds",
+    Name = "Auto Buy Items",
     CurrentValue = false,
     Flag = "AutoBuy",
     Callback = function(v) Flags.AutoBuy = v end,
 })
 MainTab:CreateDropdown({
-    Name = "Target Seed",
-    Options = {"Carrot", "Corn", "Onion", "Strawberry", "Mushroom", "Beetroot", "Tomato", "Apple"},
-    CurrentOption = "Carrot",
+    Name = "Select Item to Buy",
+    Options = ShopOptions,
+    CurrentOption = "Carrot Seed",
     Callback = function(v) Flags.SelectedBuy = v[1] end,
+})
+
+MainTab:CreateSection("Auto Plant Settings")
+MainTab:CreateToggle({
+    Name = "Auto Plant Enabled",
+    CurrentValue = false,
+    Flag = "AutoPlant",
+    Callback = function(v) Flags.AutoPlant = v end,
+})
+MainTab:CreateDropdown({
+    Name = "Select Seed to Plant",
+    Options = AllSeeds,
+    CurrentOption = "Carrot Seed",
+    Callback = function(v) Flags.SelectedPlant = v[1] end,
+})
+MainTab:CreateSlider({
+    Name = "Plant Delay (seconds)",
+    Range = {0.1, 5},
+    Increment = 0.1,
+    Suffix = "s",
+    CurrentValue = 1,
+    Callback = function(v) Flags.PlantInterval = v end,
 })
 
 -- Visuals Tab
@@ -307,9 +455,33 @@ VisualsTab:CreateToggle({
     Flag = "MutationESP",
     Callback = function(v) Flags.MutationESP = v end,
 })
+VisualsTab:CreateToggle({
+    Name = "Infinite Zoom",
+    CurrentValue = false,
+    Flag = "InfiniteZoom",
+    Callback = function(v) Flags.InfiniteZoom = v end,
+})
+VisualsTab:CreateSlider({
+    Name = "Zoom Distance",
+    Range = {128, 5000},
+    CurrentValue = 128,
+    Callback = function(v) Flags.ZoomDistance = v end,
+})
 
 -- Misc Tab
 MiscTab:CreateSection("Automation Extras")
+MiscTab:CreateToggle({
+    Name = "Auto Spin (RNG Wheel)",
+    CurrentValue = false,
+    Flag = "AutoSpin",
+    Callback = function(v) Flags.AutoSpin = v end,
+})
+MiscTab:CreateToggle({
+    Name = "Auto Claim Rewards",
+    CurrentValue = false,
+    Flag = "AutoClaim",
+    Callback = function(v) Flags.AutoClaim = v end,
+})
 MiscTab:CreateToggle({
     Name = "Auto Quest (Daily/Weekly)",
     CurrentValue = false,
@@ -330,7 +502,7 @@ MiscTab:CreateToggle({
 })
 
 Rayfield:Notify({
-    Title = "Ahok Hub Pro v2",
-    Content = "Fixes applied: Improved Corn detection & Interval Sliders added!",
+    Title = "Ahok Hub Pro v3",
+    Content = "Update: Auto-Spin, Auto-Plant & Infinite Zoom added!",
     Duration = 5
 })
