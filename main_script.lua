@@ -105,14 +105,28 @@ task.spawn(function()
                 local harvestBatch = {}
                 for _, plant in pairs(CollectionService:GetTagged("Plant")) do
                     if plant:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
-                        local ripeness = plant:GetAttribute("RipenessStage")
-                        local uuid = plant:GetAttribute("Uuid")
                         local pName = GetPlantName(plant)
-                        
                         local matchesFilter = (Flags.SelectedHarvest == "All" or Flags.SelectedHarvest == pName)
                         
-                        if (ripeness == "Ripe" or ripeness == "Lush") and uuid and matchesFilter then
-                            table.insert(harvestBatch, {Uuid = uuid})
+                        if matchesFilter then
+                            -- Check if the main plant is harvestable (e.g. Carrot, Onion)
+                            local uuid = plant:GetAttribute("Uuid")
+                            local ripeness = plant:GetAttribute("RipenessStage")
+                            local fullyGrown = plant:GetAttribute("FullyGrown")
+                            
+                            if uuid and (ripeness == "Ripe" or ripeness == "Lush" or fullyGrown) then
+                                table.insert(harvestBatch, {Uuid = uuid})
+                            end
+                            
+                            -- Check for regrowable fruits (e.g. Corn, Strawberry) which are children models
+                            for _, child in pairs(plant:GetChildren()) do
+                                if child:IsA("Model") and child:GetAttribute("FullyGrown") then
+                                    local fruitUuid = child:GetAttribute("Uuid")
+                                    if fruitUuid then
+                                        table.insert(harvestBatch, {Uuid = fruitUuid})
+                                    end
+                                end
+                            end
                         end
                     end
                 end
@@ -169,13 +183,12 @@ task.spawn(function()
                 if Flags.SelectedSell == "All" then
                     Remotes.Sell:InvokeServer("SellAll")
                 else
-                    -- For selective sell, we look for the specific item in backpack
-                    -- Note: InvokeServer("SellSingle") usually sells the held item or takes arguments
-                    -- We'll try to find the item and sell it
+                    -- For selective sell, we must equip the item first for "SellSingle" logic
                     for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
-                        if item.Name:find(Flags.SelectedSell) then
-                            -- Equip and sell if needed, or if remote accepts name
-                            Remotes.Sell:InvokeServer("SellSingle", item.Name)
+                        if item.Name:find(Flags.SelectedSell) and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+                            LocalPlayer.Character.Humanoid:EquipTool(item)
+                            task.wait(0.2)
+                            Remotes.Sell:InvokeServer("SellSingle")
                         end
                     end
                 end
@@ -184,7 +197,10 @@ task.spawn(function()
 
             -- Auto Buy
             if Flags.AutoBuy and Remotes.Shop and Flags.SelectedBuy ~= "None" then
-                Remotes.Shop:InvokeServer("SeedShop", Flags.SelectedBuy)
+                -- RemoteFunction:InvokeServer("SeedShop", seedKey)
+                pcall(function()
+                    Remotes.Shop:InvokeServer("SeedShop", Flags.SelectedBuy)
+                end)
                 task.wait(1)
             end
 
