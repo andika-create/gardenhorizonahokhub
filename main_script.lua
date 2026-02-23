@@ -1,7 +1,6 @@
 --[[
-    GARDEN HORIZONS ULTIMATE SCRIPT
-    Features: Auto-Farm (Harvest/Sell), Mutation ESP, Anti-AFK, Anti-Cheat Mitigation
-    UI Library: Rayfield
+    AHOK HUB | GARDEN HORIZONS
+    Robust Version (Fixed Remote Detection)
 ]]
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -27,17 +26,33 @@ local Window = Rayfield:CreateWindow({
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local CollectionService = game:GetService("CollectionService")
 local LocalPlayer = Players.LocalPlayer
 
--- // Remotes
+-- // Robust Remote Detection
+local function FindRemote(Name)
+    local remote = ReplicatedStorage:FindFirstChild(Name, true)
+    if not remote then
+        warn("[Ahok Hub] Could not find remote: " .. Name)
+        Rayfield:Notify({Title="Debug", Content="Missing Remote: " .. Name, Duration=10})
+    end
+    return remote
+end
+
 local Remotes = {
-    Harvest = ReplicatedStorage:WaitForChild("HarvestFruit"),
-    Plant = ReplicatedStorage:WaitForChild("PlantSeed"),
-    Sell = ReplicatedStorage:WaitForChild("SellItems"),
-    ClaimQuest = ReplicatedStorage:WaitForChild("ClaimQuest"),
-    Integrity = ReplicatedStorage:FindFirstChild("IntegrityCheckProcessorKey2_LocalizationTableAnalyticsSender_LocalizationService")
+    Harvest = FindRemote("HarvestFruit"),
+    Plant = FindRemote("PlantSeed"),
+    Sell = FindRemote("SellItems"),
+    ClaimQuest = FindRemote("ClaimQuest"),
 }
+
+-- Check if core remotes are missing
+if not Remotes.Harvest then
+    Rayfield:Notify({
+        Title = "Warning",
+        Content = "Core game remotes not found. Some features may not work.",
+        Duration = 10
+    })
+end
 
 -- // Variables
 local Flags = {
@@ -47,182 +62,111 @@ local Flags = {
     AntiAFK = true
 }
 
-local ESP_Highlights = {}
-
--- // Anti-Cheat Mitigation
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-    local method = getnamecallmethod()
-    local args = {...}
-    
-    if not checkcaller() then
-        if (method == "FireServer" or method == "InvokeServer") and (tostring(self):find("Integrity") or tostring(self):find("Analytics")) then
-            return nil
+-- // Minimal Security Hook (Less likely to cause 'Anomality')
+local success, err = pcall(function()
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        if not checkcaller() then
+            -- Block specific analytics/integrity remotes by name match
+            local name = tostring(self)
+            if (method == "FireServer") and (name:find("Integrity") or name:find("Analytics")) then
+                return nil
+            end
         end
-    end
-    
-    return oldNamecall(self, ...)
+        return oldNamecall(self, ...)
+    end)
 end)
+
+if not success then
+    warn("[Ahok Hub] Hook failed: " .. tostring(err))
+end
 
 -- Anti-AFK
 LocalPlayer.Idled:Connect(function()
     if Flags.AntiAFK then
         local VirtualUser = game:GetService("VirtualUser")
-        VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new())
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
     end
 end)
 
--- // Helper Functions
+-- // Logic
 local function GetMyPlot()
-    -- Look for a plot owned by the local player
     local Plots = workspace:FindFirstChild("Plots")
     if not Plots then return nil end
-    
     for _, plot in pairs(Plots:GetChildren()) do
         local owner = plot:FindFirstChild("Owner")
-        if owner and owner.Value == LocalPlayer then
-            return plot
-        end
+        if owner and owner.Value == LocalPlayer then return plot end
     end
     return nil
 end
 
-local function UpdateESP()
-    for plant, highlight in pairs(ESP_Highlights) do
-        if not plant.Parent then
-            highlight:Destroy()
-            ESP_Highlights[plant] = nil
-        end
-    end
-
-    if Flags.MutationESP then
-        local myPlot = GetMyPlot()
-        if not myPlot then return end
-        
-        for _, plant in pairs(myPlot:WaitForChild("Plants"):GetChildren()) do
-            if plant:IsA("Model") and not ESP_Highlights[plant] then
-                local mutation = plant:GetAttribute("Mutation")
-                if mutation and mutation ~= "None" then
-                    local highlight = Instance.new("Highlight")
-                    highlight.Parent = plant
-                    highlight.FillColor = (mutation == "Gold" and Color3.fromHex("#FFD700")) or (mutation == "Silver" and Color3.fromHex("#C0C0C0")) or Color3.new(1, 0, 1)
-                    highlight.OutlineColor = Color3.new(1, 1, 1)
-                    highlight.FillTransparency = 0.5
-                    ESP_Highlights[plant] = highlight
+local function MainLoop()
+    while task.wait(0.5) do
+        if Flags.AutoHarvest and Remotes.Harvest then
+            local myPlot = GetMyPlot()
+            if myPlot then
+                local plants = myPlot:FindFirstChild("Plants")
+                if plants then
+                    for _, plant in pairs(plants:GetChildren()) do
+                        if plant:GetAttribute("IsRipe") or (plant:GetAttribute("Stage") and plant:GetAttribute("MaxStage") and plant:GetAttribute("Stage") >= plant:GetAttribute("MaxStage")) then
+                            Remotes.Harvest:FireServer(plant)
+                            task.wait(0.2)
+                        end
+                    end
                 end
             end
         end
-    else
-        for _, highlight in pairs(ESP_Highlights) do
-            highlight:Destroy()
+
+        if Flags.AutoSell and Remotes.Sell then
+            Remotes.Sell:InvokeServer()
+            task.wait(10)
         end
-        ESP_Highlights = {}
     end
 end
 
--- // Main Loop
-task.spawn(function()
-    while task.wait(0.5) do
-        local myPlot = GetMyPlot()
-        if not myPlot then continue end
-
-        -- Auto Harvest Logic
-        if Flags.AutoHarvest then
-            for _, plant in pairs(myPlot:WaitForChild("Plants"):GetChildren()) do
-                -- Check for 'Stage' or 'Ripe' attributes found in data
-                local stage = plant:GetAttribute("Stage")
-                local maxStage = plant:GetAttribute("MaxStage") or 4 -- Default to 4 if nil
-                
-                if (stage and maxStage and stage >= maxStage) or plant:GetAttribute("IsRipe") then
-                    Remotes.Harvest:FireServer(plant)
-                    -- Random wait to mimic human behavior and avoid detection
-                    task.wait(math.random(1, 5) / 10)
-                end
-            end
-        end
-
-        -- Auto Sell Logic
-        if Flags.AutoSell then
-            -- Only sell if inventory is likely full or at intervals
-            -- Assuming the remote handles selling all inventory
-            Remotes.Sell:InvokeServer()
-            task.wait(5) -- Don't spam sell
-        end
-        
-        -- ESP Update
-        UpdateESP()
-    end
-end)
-
--- // UI Tabs
+-- // UI
 local MainTab = Window:CreateTab("Main", 4483362458)
 local VisualsTab = Window:CreateTab("Visuals", 4483345998)
 local MiscTab = Window:CreateTab("Misc", 4483362458)
 
 MainTab:CreateSection("Auto-Farm")
-
 MainTab:CreateToggle({
     Name = "Auto Harvest",
     CurrentValue = false,
     Flag = "AutoHarvest",
-    Callback = function(Value)
-        Flags.AutoHarvest = Value
-    end,
+    Callback = function(v) Flags.AutoHarvest = v end,
 })
-
 MainTab:CreateToggle({
     Name = "Auto Sell",
     CurrentValue = false,
     Flag = "AutoSell",
-    Callback = function(Value)
-        Flags.AutoSell = Value
-    end,
-})
-
-MainTab:CreateSection("Quests")
-
-MainTab:CreateButton({
-    Name = "Claim Available Quests",
-    Callback = function()
-        -- Attempt to claim quests
-        Remotes.ClaimQuest:FireServer()
-        Rayfield:Notify({Title="Quests", Content="Attempted to claim all available quests."})
-    end,
+    Callback = function(v) Flags.AutoSell = v end,
 })
 
 VisualsTab:CreateSection("ESP")
-
 VisualsTab:CreateToggle({
-    Name = "Mutation ESP",
+    Name = "Mutation ESP (Beta)",
     CurrentValue = false,
     Flag = "MutationESP",
-    Callback = function(Value)
-        Flags.MutationESP = Value
-    end,
+    Callback = function(v) Flags.MutationESP = v end,
 })
 
 MiscTab:CreateSection("Utilities")
-
 MiscTab:CreateToggle({
     Name = "Anti-AFK",
     CurrentValue = true,
     Flag = "AntiAFK",
-    Callback = function(Value)
-        Flags.AntiAFK = Value
-    end,
+    Callback = function(v) Flags.AntiAFK = v end,
 })
 
-MiscTab:CreateButton({
-    Name = "Force Reset UI",
-    Callback = function()
-        Rayfield:Destroy()
-    end,
-})
+task.spawn(MainLoop)
 
 Rayfield:Notify({
-    Title = "Ready to Garden!",
-    Content = "Script loaded. Use the UI to enable features.",
-    Duration = 5,
-    Image = 4483362458,
+    Title = "Ahok Hub Loaded",
+    Content = "Script is running. If UI doesn't appear, check console (F9).",
+    Duration = 5
 })
