@@ -153,8 +153,8 @@ task.spawn(function()
                     or obj:GetAttribute("RipenessStage") == "Ripe"
                     or obj:GetAttribute("RipenessStage") == "Lush"
                 
-                -- Only add to batch if it has a UUID, is ripe, and NOT already harvested
-                if uuid and ripe and not seen[uuid] and obj:GetAttribute("IsHarvested") == false then
+                -- Only add to batch if it has a UUID and is ripe
+                if uuid and ripe and not seen[uuid] then
                     seen[uuid] = true
                     table.insert(harvestBatch, {Uuid = uuid})
                 end
@@ -250,37 +250,9 @@ task.spawn(function()
                         pcall(function()
                             local isGear = table.find(AllGear, item)
                             local shopType = isGear and "GearShop" or "SeedShop"
-                            local npcName = isGear and "GearNPC" or "SeedNPC"
                             
-                            -- Find the NPC to teleport to
-                            local npc = workspace:FindFirstChild(npcName, true)
-                            if not npc and npcName == "SeedNPC" then 
-                                -- Fallback search if exact name not found in direct children
-                                for _, v in pairs(workspace:GetDescendants()) do
-                                    if v.Name:find("Seed") and v.Name:find("NPC") then
-                                        npc = v
-                                        break
-                                    end
-                                end
-                            end
-
-                            local char = LocalPlayer.Character
-                            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                            
-                            if npc and hrp then
-                                local npcPos = npc:GetPivot().Position
-                                local oldCF = hrp.CFrame
-                                
-                                -- Teleport to NPC, Invoke Shop, then Teleport Back
-                                hrp.CFrame = CFrame.new(npcPos + Vector3.new(0, 3, 0))
-                                task.wait(0.1)
-                                Remotes.Shop:InvokeServer(shopType, item)
-                                task.wait(0.1)
-                                hrp.CFrame = oldCF
-                            else
-                                -- Fallback: Just invoke the server if NPC not found
-                                Remotes.Shop:InvokeServer(shopType, item)
-                            end
+                            -- Simple remote call, game usually doesn't enforce distance for this specific shop remote
+                            Remotes.Shop:InvokeServer(shopType, item)
                         end)
                         task.wait(0.5)
                     end
