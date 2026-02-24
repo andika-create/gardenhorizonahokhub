@@ -74,6 +74,8 @@ local Flags = {
     PlantInterval = 1,
     ZoomDistance = 128,
     MasterAFK = false,
+    PersonalScan = true,
+    TargetPlotSelection = "My Plot",
     UI_Ready = false
 }
 
@@ -165,25 +167,27 @@ task.spawn(function()
                 end
             end
             
-            local myPlot = GetMyPlot()
-            if myPlot then
-                -- Scan all plant models on my plot
-                for _, obj in pairs(myPlot:GetDescendants()) do
-                    if obj:IsA("Model") and obj:GetAttribute("PlantType") then
-                        local pName = GetPlantName(obj)
-                        if Flags.SelectedHarvest[pName] then
-                            QueueFruit(obj)
-                        end
-                    end
-                end
-            else
-                -- Fallback: CollectionService tagged plants
+            if Flags.PersonalScan then
+                -- Scan all tagged plants in workspace where owner is LocalPlayer
                 for _, plant in pairs(CollectionService:GetTagged("Plant")) do
                     local ownedBy = plant:GetAttribute("OwnerUserId") or plant:GetAttribute("Owner")
                     if ownedBy == LocalPlayer.UserId then
                         local pName = GetPlantName(plant)
                         if Flags.SelectedHarvest[pName] then
                             QueueFruit(plant)
+                        end
+                    end
+                end
+            else
+                local myPlot = GetMyPlot()
+                if myPlot then
+                    -- Scan all plant models on my plot
+                    for _, obj in pairs(myPlot:GetDescendants()) do
+                        if obj:IsA("Model") and obj:GetAttribute("PlantType") then
+                            local pName = GetPlantName(obj)
+                            if Flags.SelectedHarvest[pName] then
+                                QueueFruit(obj)
+                            end
                         end
                     end
                 end
@@ -296,11 +300,26 @@ task.spawn(function()
     while task.wait(1) do
         if not Flags.AutoPlant or not Remotes.Plant then continue end
         pcall(function()
-            local myPlot = GetMyPlot()
-            if not myPlot then
-                warn("AutoPlant: No plot found for you! Claim a plot first.")
+            local targetPlot = nil
+            if Flags.TargetPlotSelection == "My Plot" then
+                targetPlot = GetMyPlot()
+            else
+                local plots = workspace:FindFirstChild("Plots")
+                if plots then
+                    targetPlot = plots:FindFirstChild(Flags.TargetPlotSelection)
+                end
+            end
+
+            if not targetPlot then
+                if Flags.TargetPlotSelection == "My Plot" then
+                    warn("AutoPlant: No plot found for you! Claim a plot first.")
+                else
+                    warn("AutoPlant: Target plot " .. Flags.TargetPlotSelection .. " not found!")
+                end
                 return
             end
+            
+            local myPlot = targetPlot
             
             -- Collect all PlantableArea BaseParts (game stores them inside a PlantableArea Folder)
             local areas = {}
@@ -508,6 +527,12 @@ MainTab:CreateToggle({
     Flag = "AutoHarvest",
     Callback = function(v) Flags.AutoHarvest = v end,
 })
+MainTab:CreateToggle({
+    Name = "Personal Plant Scan (Whole Map)",
+    CurrentValue = true,
+    Flag = "PersonalScan",
+    Callback = function(v) Flags.PersonalScan = v end,
+})
 MainTab:CreateSection("Harvest Filters (Multiple)")
 for _, p in pairs(PlantTypesOnly) do
     MainTab:CreateToggle({
@@ -581,6 +606,13 @@ MainTab:CreateToggle({
     Name = "Auto Plant Enabled",
     CurrentValue = Flags.AutoPlant,
     Callback = function(v) Flags.AutoPlant = v end,
+})
+MainTab:CreateDropdown({
+    Name = "Target Plot",
+    Options = {"My Plot", "Plot 1", "Plot 2", "Plot 3", "Plot 4", "Plot 5", "Plot 6", "Plot 7", "Plot 8", "Plot 9", "Plot 10"},
+    CurrentValue = "My Plot",
+    Flag = "TargetPlotSelection",
+    Callback = function(v) Flags.TargetPlotSelection = v end,
 })
 MainTab:CreateSection("Plant Filters (Multiple)")
 for _, s in pairs(AllSeeds) do
