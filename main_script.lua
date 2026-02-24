@@ -148,15 +148,18 @@ task.spawn(function()
             local seen = {}
             
             local function QueueFruit(obj)
-                if obj:GetAttribute("IsHarvested") then return end
                 local uuid = obj:GetAttribute("Uuid")
                 local ripe = obj:GetAttribute("FullyGrown") == true
                     or obj:GetAttribute("RipenessStage") == "Ripe"
                     or obj:GetAttribute("RipenessStage") == "Lush"
-                if uuid and ripe and not seen[uuid] then
+                
+                -- Only add to batch if it has a UUID, is ripe, and NOT already harvested
+                if uuid and ripe and not seen[uuid] and obj:GetAttribute("IsHarvested") == false then
                     seen[uuid] = true
                     table.insert(harvestBatch, {Uuid = uuid})
                 end
+                
+                -- Always scan children for regrowables or nested fruits
                 for _, child in pairs(obj:GetChildren()) do
                     QueueFruit(child)
                 end
@@ -245,9 +248,39 @@ task.spawn(function()
                 for item, enabled in pairs(Flags.SelectedBuy) do
                     if enabled then
                         pcall(function()
-                            local shopType = table.find(AllGear, item) and "GearShop" or "SeedShop"
-                            -- Fix: Send full name (e.g. "Carrot Seed") as required by PurchaseShopItem
-                            Remotes.Shop:InvokeServer(shopType, item)
+                            local isGear = table.find(AllGear, item)
+                            local shopType = isGear and "GearShop" or "SeedShop"
+                            local npcName = isGear and "GearNPC" or "SeedNPC"
+                            
+                            -- Find the NPC to teleport to
+                            local npc = workspace:FindFirstChild(npcName, true)
+                            if not npc and npcName == "SeedNPC" then 
+                                -- Fallback search if exact name not found in direct children
+                                for _, v in pairs(workspace:GetDescendants()) do
+                                    if v.Name:find("Seed") and v.Name:find("NPC") then
+                                        npc = v
+                                        break
+                                    end
+                                end
+                            end
+
+                            local char = LocalPlayer.Character
+                            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                            
+                            if npc and hrp then
+                                local npcPos = npc:GetPivot().Position
+                                local oldCF = hrp.CFrame
+                                
+                                -- Teleport to NPC, Invoke Shop, then Teleport Back
+                                hrp.CFrame = CFrame.new(npcPos + Vector3.new(0, 3, 0))
+                                task.wait(0.1)
+                                Remotes.Shop:InvokeServer(shopType, item)
+                                task.wait(0.1)
+                                hrp.CFrame = oldCF
+                            else
+                                -- Fallback: Just invoke the server if NPC not found
+                                Remotes.Shop:InvokeServer(shopType, item)
+                            end
                         end)
                         task.wait(0.5)
                     end
@@ -371,12 +404,23 @@ task.spawn(function()
                     local cf = chosenArea.CFrame
                     local rx = (math.random() - 0.5) * sz.X * 0.7
                     local rz = (math.random() - 0.5) * sz.Z * 0.7
-                    local pos = (cf * CFrame.new(rx, sz.Y / 2, rz)).Position
-                    local seedType = seed:gsub(" Seed", "")
-                    pcall(function()
-                        Remotes.Plant:InvokeServer(seedType, pos)
-                    end)
-                    task.wait(0.3)  -- Small delay to avoid server rejection
+                    local originPos = (cf * CFrame.new(rx, sz.Y / 2 + 5, rz)).Position
+                    
+                    -- Perform Raycast to get the required RaycastResult object
+                    local raycastParams = RaycastParams.new()
+                    raycastParams.FilterType = Enum.RaycastFilterType.Include
+                    raycastParams.FilterDescendantsInstances = {chosenArea}
+                    
+                    local rayResult = workspace:Raycast(originPos, Vector3.new(0, -10, 0), raycastParams)
+                    
+                    if rayResult then
+                        local seedType = seed:gsub(" Seed", "")
+                        pcall(function()
+                            -- Pass the RaycastResult object directly as required by the game
+                            Remotes.Plant:InvokeServer(seedType, rayResult)
+                        end)
+                        task.wait(Flags.PlantInterval or 0.3)
+                    end
                 end
             end
         end)
